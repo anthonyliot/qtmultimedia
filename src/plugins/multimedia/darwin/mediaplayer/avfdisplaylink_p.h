@@ -20,9 +20,6 @@
 #include <atomic>
 
 #import <QuartzCore/CADisplayLink.h>
-#if !defined(QT_PLATFORM_UIKIT)
-#include <QuartzCore/CVDisplayLink.h>
-#endif
 
 @class QT_MANGLE_NAMESPACE(DisplayLinkObserver);
 
@@ -52,9 +49,6 @@ protected:
 
 private:
     QT_MANGLE_NAMESPACE(DisplayLinkObserver) *m_observer = {};
-#if !defined(QT_PLATFORM_UIKIT)
-    CVDisplayLinkRef m_cvDisplayLink{};
-#endif
     bool m_isActive{};
     std::atomic<bool> m_framePending{false};
 };

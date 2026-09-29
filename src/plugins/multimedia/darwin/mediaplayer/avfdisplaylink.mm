@@ -91,31 +91,14 @@ AVFDisplayLink::AVFDisplayLink(QObject *parent)
                                                     selector:@selector(displayLinkNotification:)];
     [m_observer setDisplayLink:dl];
 #else
-    if (@available(macOS 15.0, *)) {
-        m_observer = [[DisplayLinkObserver alloc] initWithAVFDisplayLink:this];
-        CADisplayLink *_Nonnull dl =
-                [NSScreen.mainScreen displayLinkWithTarget:m_observer
-                                                  selector:@selector(displayLinkNotification:)];
-        [m_observer setDisplayLink:dl];
-        return;
-    }
-    if (!m_observer) {
-        QT_WARNING_PUSH
-        QT_WARNING_DISABLE_DEPRECATED
-        CVDisplayLinkCreateWithCGDisplay(kCGDirectMainDisplay, &m_cvDisplayLink);
-        if (m_cvDisplayLink) {
-            CVDisplayLinkSetCurrentCGDisplay(m_cvDisplayLink, kCGDirectMainDisplay);
-            CVDisplayLinkSetOutputCallback(m_cvDisplayLink,
-                                           [](CVDisplayLinkRef, const CVTimeStamp *,
-                                              const CVTimeStamp *, CVOptionFlags, CVOptionFlags *,
-                                              void *displayLinkContext) -> CVReturn {
-                static_cast<AVFDisplayLink *>(displayLinkContext)->displayLinkEvent();
-                return kCVReturnSuccess;
-            },
-                                           this);
-        }
-        QT_WARNING_POP
-    }
+    // -[NSScreen displayLinkWithTarget:selector:] is available from macOS 14.0,
+    // and our minimum deployment target is 14.4, so CVDisplayLink, which is
+    // deprecated, is no longer needed.
+    m_observer = [[DisplayLinkObserver alloc] initWithAVFDisplayLink:this];
+    CADisplayLink *_Nonnull dl =
+            [NSScreen.mainScreen displayLinkWithTarget:m_observer
+                                              selector:@selector(displayLinkNotification:)];
+    [m_observer setDisplayLink:dl];
 #endif
 }
 
@@ -134,25 +117,11 @@ AVFDisplayLink::~AVFDisplayLink()
         [m_observer release];
         m_observer = nil;
     }
-
-#if !defined(QT_PLATFORM_UIKIT)
-    if (m_cvDisplayLink) {
-        QT_WARNING_PUSH
-        QT_WARNING_DISABLE_DEPRECATED
-        CVDisplayLinkRelease(m_cvDisplayLink);
-        QT_WARNING_POP
-        m_cvDisplayLink = nullptr;
-    }
-#endif
 }
 
 bool AVFDisplayLink::isValid() const
 {
-#if !defined(QT_PLATFORM_UIKIT)
-    return m_observer || m_cvDisplayLink != nullptr;
-#else
     return m_observer;
-#endif
 }
 
 bool AVFDisplayLink::isActive() const
@@ -165,14 +134,6 @@ void AVFDisplayLink::start()
     if (!m_isActive) {
         if (m_observer)
             [m_observer start];
-#if !defined(QT_PLATFORM_UIKIT)
-        else if (m_cvDisplayLink) {
-            QT_WARNING_PUSH
-            QT_WARNING_DISABLE_DEPRECATED
-            CVDisplayLinkStart(m_cvDisplayLink);
-            QT_WARNING_POP
-        }
-#endif
         m_isActive = true;
     }
 }
@@ -182,14 +143,6 @@ void AVFDisplayLink::stop()
     if (m_isActive) {
         if (m_observer)
             [m_observer stop];
-#if !defined(QT_PLATFORM_UIKIT)
-        else if (m_cvDisplayLink) {
-            QT_WARNING_PUSH
-            QT_WARNING_DISABLE_DEPRECATED
-            CVDisplayLinkStop(m_cvDisplayLink);
-            QT_WARNING_POP
-        }
-#endif
         m_framePending = false;
         m_isActive = false;
     }
