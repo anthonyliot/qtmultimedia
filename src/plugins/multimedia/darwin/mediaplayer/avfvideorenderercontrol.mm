@@ -154,27 +154,30 @@ void AVFVideoRendererControl::updateVideoFrame()
 
     auto buffer = std::make_unique<AVFVideoBuffer>(this, std::move(pixelBuffer));
 
+    // The video track's nominal frame rate, 0 if unknown
+    float fps = 0;
+    if (AVPlayerItem *playerItem = [layer.player currentItem]) {
+        for (AVPlayerItemTrack *track in playerItem.tracks) {
+            if ([track.assetTrack.mediaType isEqualToString:AVMediaTypeVideo]) {
+                fps = track.assetTrack.nominalFrameRate;
+                break;
+            }
+        }
+    }
+
     auto format = buffer->videoFormat();
     format.setRotation(m_rotation);
     format.setMirrored(m_mirrored);
+    // Lets e.g. QVideoWindow ask for a matching display refresh rate
+    format.setStreamFrameRate(fps);
     frame = QVideoFramePrivate::createFrame(std::move(buffer), format);
 
     if (startTime >= 0) {
         frame.setStartTime(startTime);
 
         // Estimate end time from video track's nominal frame rate
-        AVPlayerItem *playerItem = [layer.player currentItem];
-        if (playerItem) {
-            float fps = 0;
-            for (AVPlayerItemTrack *track in playerItem.tracks) {
-                if ([track.assetTrack.mediaType isEqualToString:AVMediaTypeVideo]) {
-                    fps = track.assetTrack.nominalFrameRate;
-                    break;
-                }
-            }
-            if (fps > 0)
-                frame.setEndTime(startTime + qint64(1000000.0 / fps));
-        }
+        if (fps > 0)
+            frame.setEndTime(startTime + qint64(1000000.0 / fps));
     }
 
     m_sink->setVideoFrame(frame);

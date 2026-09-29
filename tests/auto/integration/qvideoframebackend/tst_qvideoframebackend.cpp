@@ -52,6 +52,8 @@ private slots:
     void playback_deliversFrames_whileRunLoopIsInMode_data();
     void playback_deliversFrames_whileRunLoopIsInMode();
 
+    void streamFrameRate_isReportedForPlayedFrames();
+
 private:
     QVideoFrame createDefaultFrame() const;
 
@@ -373,6 +375,36 @@ void tst_QVideoFrameBackend::playback_deliversFrames_whileRunLoopIsInMode()
     QVERIFY2(frames - before >= 10,
              qPrintable(QStringLiteral("%1 frames in 1 s at 25 fps").arg(frames - before)));
 #endif
+}
+
+void tst_QVideoFrameBackend::streamFrameRate_isReportedForPlayedFrames()
+{
+    if (!m_colorsVideo)
+        QSKIP("The test video can't be opened, see testMediaFilesAreSupported");
+#ifdef Q_OS_HARMONY
+    QSKIP("OHOS demuxer rejects the H.264 profile used by colors.mp4");
+#endif
+    if (!isFFMPEGPlatform() && !isDarwinPlatform())
+        QSKIP("This backend doesn't report the stream frame rate");
+
+    // The frames of a played video tell the frame rate of its stream, 25 fps
+    QVideoSink sink;
+    QMediaPlayer player;
+    player.setVideoOutput(&sink);
+    int frames = 0;
+    QList<qreal> otherRates;
+    connect(&sink, &QVideoSink::videoFrameChanged, &sink, [&](const QVideoFrame &frame) {
+        if (!frame.isValid())
+            return;
+        ++frames;
+        if (frame.surfaceFormat().streamFrameRate() != 25.0)
+            otherRates.append(frame.surfaceFormat().streamFrameRate());
+    });
+    player.setSource(*m_colorsVideo);
+    player.play();
+
+    QTRY_COMPARE_GE(frames, 5);
+    QCOMPARE(otherRates, QList<qreal>());
 }
 
 QTEST_MAIN(tst_QVideoFrameBackend)
