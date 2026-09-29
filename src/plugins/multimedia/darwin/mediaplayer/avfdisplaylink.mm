@@ -54,8 +54,7 @@ QT_USE_NAMESPACE
         [m_displayLink invalidate];
         [m_displayLink release];
     }
-    if (displayLink)
-        m_displayLink = [displayLink retain];
+    m_displayLink = [displayLink retain];
 }
 
 - (void)start
@@ -126,6 +125,9 @@ AVFDisplayLink::~AVFDisplayLink()
     stop();
 
     if (m_observer) {
+        // The display link retains its target, the observer, until it's
+        // invalidated, so releasing the observer alone would leak both
+        [m_observer setDisplayLink:nil];
         [m_observer release];
         m_observer = nil;
     }
