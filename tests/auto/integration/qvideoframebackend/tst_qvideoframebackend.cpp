@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: LicenseRef-Qt-Commercial OR GPL-3.0-only
 
 #include <QtCore/qdebug.h>
+#include <QtCore/qelapsedtimer.h>
 #include <QtCore/qthreadpool.h>
 
+#include <QtGui/qguiapplication.h>
 #include <QtGui/rhi/qrhi.h>
 
 #include <QtMultimedia/qmediaplayer.h>
@@ -21,6 +23,10 @@
 #include <QtTest/qtest.h>
 
 #include <list>
+
+#ifdef Q_OS_MACOS
+#  include <CoreFoundation/CoreFoundation.h>
+#endif
 
 class tst_QVideoFrameBackend : public QIntegrationTestBase
 {
@@ -42,6 +48,9 @@ private slots:
 
     void toImage_returnsImage_whenCalledFromSeparateThreadAndWhileRenderingToWindow_data();
     void toImage_returnsImage_whenCalledFromSeparateThreadAndWhileRenderingToWindow();
+
+    void playback_deliversFrames_whileRunLoopIsInMode_data();
+    void playback_deliversFrames_whileRunLoopIsInMode();
 
 private:
     QVideoFrame createDefaultFrame() const;
@@ -317,6 +326,53 @@ void tst_QVideoFrameBackend::toImage_returnsImage_whenCalledFromSeparateThreadAn
             images.begin(), images.end(), [](const QImage &image) { return !image.isNull(); });
 
     QCOMPARE(validImagesCount, images.size());
+}
+
+void tst_QVideoFrameBackend::playback_deliversFrames_whileRunLoopIsInMode_data()
+{
+    QTest::addColumn<QString>("mode");
+
+    // While a menu is open or a window is live resized, and in modal sessions
+    QTest::newRow("event tracking") << QStringLiteral("NSEventTrackingRunLoopMode");
+    QTest::newRow("modal panel") << QStringLiteral("NSModalPanelRunLoopMode");
+}
+
+void tst_QVideoFrameBackend::playback_deliversFrames_whileRunLoopIsInMode()
+{
+#ifndef Q_OS_MACOS
+    QSKIP("Run loop modes are specific to macOS");
+#else
+    QFETCH(const QString, mode);
+    if (!m_colorsVideo)
+        QSKIP("The test video can't be opened, see testMediaFilesAreSupported");
+    if (QGuiApplication::platformName() != u"cocoa")
+        QSKIP("Only the cocoa platform delivers events in these run loop modes");
+
+    // Frames keep coming while the main run loop runs in another mode than the
+    // default one
+    QVideoSink sink;
+    QMediaPlayer player;
+    player.setVideoOutput(&sink);
+    int frames = 0;
+    connect(&sink, &QVideoSink::videoFrameChanged, &sink, [&](const QVideoFrame &frame) {
+        if (frame.isValid())
+            ++frames;
+    });
+    player.setSource(*m_colorsVideo);
+    player.setLoops(QMediaPlayer::Infinite);
+    player.play();
+    QTRY_VERIFY(frames > 0);
+
+    const int before = frames;
+    const CFStringRef runLoopMode = mode.toCFString();
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < 1000)
+        CFRunLoopRunInMode(runLoopMode, 0.05, false);
+    CFRelease(runLoopMode);
+    QVERIFY2(frames - before >= 10,
+             qPrintable(QStringLiteral("%1 frames in 1 s at 25 fps").arg(frames - before)));
+#endif
 }
 
 QTEST_MAIN(tst_QVideoFrameBackend)

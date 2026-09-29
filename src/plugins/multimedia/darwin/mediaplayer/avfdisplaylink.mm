@@ -59,12 +59,15 @@ QT_USE_NAMESPACE
 
 - (void)start
 {
-    [m_displayLink addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSDefaultRunLoopMode];
+    // In the common modes, so that the video keeps playing while the run loop
+    // tracks a menu or a live resize, or runs a modal session. Qt delivers the
+    // event that displayLinkNotification: posts in those modes as well.
+    [m_displayLink addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
 }
 
 - (void)stop
 {
-    [m_displayLink removeFromRunLoop:[NSRunLoop currentRunLoop] forMode:NSDefaultRunLoopMode];
+    [m_displayLink removeFromRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
 }
 
 - (void)displayLinkNotification:(CADisplayLink *)sender
