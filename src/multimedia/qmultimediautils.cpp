@@ -64,6 +64,39 @@ QSize qCalculateFrameSize(QSize resolution, Fraction par)
     return { resolution.width(), resolution.height() * par.denominator / par.numerator };
 }
 
+qreal qVideoPreferredFrameRate(qreal frameRate, qreal refreshRate)
+{
+    // The platforms show rates that divide the refresh rate by a whole number
+    // and are whole numbers themselves, and pace other rates at the next faster
+    // one (see QWindow::preferredFrameRate). Only a whole multiple of the frame
+    // rate shows every frame for the same time: 24 fps at 24 or 48 Hz, but not
+    // 25 fps at 30 Hz, which shows every fifth frame for two refreshes, more
+    // unevenly than the full rate does (at 60 Hz 25 fps frames are shown for 33
+    // or 50 ms, at 30 Hz for 33 or 67 ms). Up to 0.2% slower counts too, so that
+    // 23.976 and 29.97 count as 24 and 30: about one frame in 1000 is then shown
+    // twice as long (every 42 s at 23.976 fps), at most one in 500. Faster
+    // doesn't (but for the rounding of float rates), as frames would be dropped.
+    // Less than a frame an hour (as qtbase's timer based pacing) gets none, which
+    // also keeps the multiples below from overflowing
+    constexpr int maxRefreshRate = 1000;
+    if (!(frameRate >= 1.0 / 3600) || !(refreshRate > 0) || refreshRate > maxRefreshRate)
+        return 0;
+    const int wholeRefreshRate = qRound(refreshRate);
+    // The slowest such rate, i.e. the most refreshes per frame. One refresh per
+    // frame is the full rate, which needs no preference.
+    for (int refreshes = wholeRefreshRate; refreshes >= 2; --refreshes) {
+        if (wholeRefreshRate % refreshes != 0)
+            continue;
+        const qreal multiple = refreshRate / refreshes / frameRate;
+        const int wholeMultiple = qRound(multiple);
+        if (wholeMultiple >= 1 && multiple >= wholeMultiple * (1 - 1e-6)
+            && multiple <= wholeMultiple * 1.002) {
+            return wholeMultiple * frameRate;
+        }
+    }
+    return 0;
+}
+
 QSize qRotatedFrameSize(QSize size, int rotation)
 {
     Q_ASSERT(rotation % 90 == 0);

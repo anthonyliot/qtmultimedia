@@ -27,6 +27,9 @@ private slots:
 
     void qRotatedFrameSize_returnsSizeAccordinglyToRotation();
 
+    void qVideoPreferredFrameRate_returnsRateWithEvenCadence_data();
+    void qVideoPreferredFrameRate_returnsRateWithEvenCadence();
+
     void qMediaFromUserInput_addsFilePrefix_whenCalledWithLocalFile();
 
     void qGetRequiredSwapChainFormat_returnsSdr_whenMaxLuminanceIsBelowSdrThreshold_data();
@@ -123,6 +126,73 @@ void tst_QMultimediaUtils::qRotatedFrameSize_returnsSizeAccordinglyToRotation()
 
     QCOMPARE(qRotatedFrameSize({ 11, 22 }, QtVideo::Rotation::Clockwise90), QSize(22, 11));
     QCOMPARE(qRotatedFrameSize({ 11, 22 }, QtVideo::Rotation::Clockwise270), QSize(22, 11));
+}
+
+void tst_QMultimediaUtils::qVideoPreferredFrameRate_returnsRateWithEvenCadence_data()
+{
+    QTest::addColumn<qreal>("frameRate");
+    QTest::addColumn<qreal>("refreshRate");
+    QTest::addColumn<qreal>("expected");
+
+    // Rates the display shows exactly: every frame for the same time
+    QTest::newRow("24 fps at 120 Hz") << 24.0 << 120.0 << 24.0;
+    QTest::newRow("24 fps at 240 Hz") << 24.0 << 240.0 << 24.0;
+    QTest::newRow("23.976 fps at 120 Hz") << 24000.0 / 1001 << 120.0 << 24000.0 / 1001;
+    QTest::newRow("30 fps at 60 Hz") << 30.0 << 60.0 << 30.0;
+    QTest::newRow("29.97 fps at 60 Hz") << 30000.0 / 1001 << 60.0 << 30000.0 / 1001;
+    QTest::newRow("29.97 fps at 59.94 Hz") << 30000.0 / 1001 << 60000.0 / 1001 << 30000.0 / 1001;
+    QTest::newRow("60 fps at 120 Hz") << 60.0 << 120.0 << 60.0;
+    QTest::newRow("48 fps at 240 Hz") << 48.0 << 240.0 << 48.0;
+    QTest::newRow("15 fps at 60 Hz") << 15.0 << 60.0 << 15.0;
+    QTest::newRow("12 fps at 60 Hz") << 12.0 << 60.0 << 12.0;
+    // A multiple of the frame rate, when the rate itself isn't a whole number
+    QTest::newRow("12.5 fps at 100 Hz") << 12.5 << 100.0 << 25.0;
+    QTest::newRow("0.5 fps at 60 Hz") << 0.5 << 60.0 << 1.0;
+    QTest::newRow("a frame an hour at 60 Hz") << 1.0 / 3600 << 60.0 << 1.0;
+
+    // Paced at the next faster exact rate, some frames would be shown longer
+    QTest::newRow("25 fps at 60 Hz") << 25.0 << 60.0 << 0.0;
+    QTest::newRow("25 fps at 120 Hz") << 25.0 << 120.0 << 0.0;
+    QTest::newRow("25 fps at 240 Hz") << 25.0 << 240.0 << 0.0;
+    QTest::newRow("24 fps at 60 Hz") << 24.0 << 60.0 << 0.0;
+    QTest::newRow("23.976 fps at 60 Hz") << 24000.0 / 1001 << 60.0 << 0.0;
+    QTest::newRow("48 fps at 120 Hz") << 48.0 << 120.0 << 0.0;
+    QTest::newRow("50 fps at 120 Hz") << 50.0 << 120.0 << 0.0;
+    QTest::newRow("50 fps at 240 Hz") << 50.0 << 240.0 << 0.0;
+    QTest::newRow("12.5 fps at 60 Hz") << 12.5 << 60.0 << 0.0;
+    QTest::newRow("1% slower than 24 fps at 120 Hz") << 24 * 0.99 << 120.0 << 0.0;
+    // Faster than an exact rate would drop frames, but for the rounding of float rates
+    QTest::newRow("0.1% faster than 24 fps at 120 Hz") << 24 * 1.001 << 120.0 << 0.0;
+    QTest::newRow("25 fps played at float(1.2) at 60 Hz")
+            << 25 * qreal(1.2f) << 60.0 << 25 * qreal(1.2f);
+    // A display just below a whole refresh rate shows rates just below whole ones
+    QTest::newRow("30 fps at 59.94 Hz") << 30.0 << 60000.0 / 1001 << 0.0;
+    QTest::newRow("24 fps at 119.88 Hz") << 24.0 << 120000.0 / 1001 << 0.0;
+    QTest::newRow("23.976 fps at 119.88 Hz") << 24000.0 / 1001 << 120000.0 / 1001 << 24000.0 / 1001;
+
+    // The full rate, or faster, needs no preference
+    QTest::newRow("60 fps at 60 Hz") << 60.0 << 60.0 << 0.0;
+    QTest::newRow("120 fps at 60 Hz") << 120.0 << 60.0 << 0.0;
+
+    // Unknown or invalid rates
+    QTest::newRow("0 fps") << 0.0 << 60.0 << 0.0;
+    QTest::newRow("a frame every two hours") << 1.0 / 7200 << 60.0 << 0.0;
+    QTest::newRow("1e-12 fps") << 1e-12 << 240.0 << 0.0;
+    QTest::newRow("-24 fps") << -24.0 << 120.0 << 0.0;
+    QTest::newRow("NaN fps") << qQNaN() << 120.0 << 0.0;
+    QTest::newRow("infinite fps") << qInf() << 120.0 << 0.0;
+    QTest::newRow("unknown display") << 24.0 << 0.0 << 0.0;
+    QTest::newRow("NaN Hz") << 24.0 << qQNaN() << 0.0;
+    QTest::newRow("infinite Hz") << 24.0 << qInf() << 0.0;
+}
+
+void tst_QMultimediaUtils::qVideoPreferredFrameRate_returnsRateWithEvenCadence()
+{
+    QFETCH(const qreal, frameRate);
+    QFETCH(const qreal, refreshRate);
+    QFETCH(const qreal, expected);
+
+    QCOMPARE(qVideoPreferredFrameRate(frameRate, refreshRate), expected);
 }
 
 void tst_QMultimediaUtils::qMediaFromUserInput_addsFilePrefix_whenCalledWithLocalFile()

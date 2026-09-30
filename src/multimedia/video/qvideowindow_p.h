@@ -50,6 +50,8 @@ public:
 
     void setupGraphicsPipeline(QRhiGraphicsPipeline *pipeline, QRhiShaderResourceBindings *bindings, const QVideoFrameFormat &fmt);
 
+    bool setsPreferredFrameRate() const;
+
     QVideoWindow *q = nullptr;
     Qt::AspectRatioMode aspectRatioMode = Qt::KeepAspectRatio;
 
@@ -85,6 +87,7 @@ public:
     bool m_hasSwapChain = false;
     bool m_subtitleDirty = false;
     bool m_hasSubtitle = false;
+    qreal m_preferredFrameRate = 0; // the window's preferred frame rate that setVideoFrame() set
     QVideoFrameFormat format;
 };
 
@@ -117,6 +120,9 @@ private:
     friend class QVideoWindowPrivate;
     std::unique_ptr<QVideoWindowPrivate> d;
 };
+
+// For autotests on displays with a fixed refresh rate
+Q_AUTOTEST_EXPORT void qt_setVideoWindowAssumesVariableRefreshRate(bool assume);
 
 QT_END_NAMESPACE
 

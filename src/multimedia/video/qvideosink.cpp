@@ -182,6 +182,16 @@ QSize QVideoSink::videoSize() const
     return d->videoSink ? d->videoSink->nativeSize() : QSize{};
 }
 
+/*!
+    \internal
+    Returns the object that delivers frames to the sink, e.g. a QMediaPlayer,
+    or nullptr.
+*/
+QObject *QVideoSink::source() const
+{
+    return d->source;
+}
+
 void QVideoSink::setSource(QObject *source)
 {
     if (d->source == source)

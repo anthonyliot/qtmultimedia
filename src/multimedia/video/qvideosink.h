@@ -47,7 +47,9 @@ Q_SIGNALS:
 private:
     friend class QMediaPlayerPrivate;
     friend class QMediaCaptureSessionPrivate;
+    friend class QVideoWindow;
     void setSource(QObject *source);
+    QObject *source() const;
 
     QVideoSinkPrivate *d = nullptr;
 };
