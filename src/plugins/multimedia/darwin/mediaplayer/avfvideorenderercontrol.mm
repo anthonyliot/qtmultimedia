@@ -100,6 +100,12 @@ void AVFVideoRendererControl::reconfigure()
     nativeSizeChanged();
 }
 
+void AVFVideoRendererControl::setDisplayWindow(QWindow *window)
+{
+    // Poll for frames in sync with the display the video is shown on
+    m_displayLink->setWindow(window);
+}
+
 void AVFVideoRendererControl::setLayer(CALayer *layer)
 {
     if (m_layer == layer)

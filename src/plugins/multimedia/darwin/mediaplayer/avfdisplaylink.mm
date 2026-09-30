@@ -4,6 +4,8 @@
 #include "avfdisplaylink_p.h"
 
 #include <QtCore/qcoreapplication.h>
+#include <QtGui/qscreen.h>
+#include <QtGui/qscreen_platform.h>
 
 #ifdef QT_DEBUG_AVF
 #include <QtCore/qdebug.h>
@@ -93,12 +95,51 @@ AVFDisplayLink::AVFDisplayLink(QObject *parent)
 #else
     // -[NSScreen displayLinkWithTarget:selector:] is available from macOS 14.0,
     // and our minimum deployment target is 14.4, so CVDisplayLink, which is
-    // deprecated, is no longer needed.
+    // deprecated, is no longer needed. Until we know the window the video is
+    // shown in, see setWindow(), use the main screen.
     m_observer = [[DisplayLinkObserver alloc] initWithAVFDisplayLink:this];
-    CADisplayLink *_Nonnull dl =
-            [NSScreen.mainScreen displayLinkWithTarget:m_observer
-                                              selector:@selector(displayLinkNotification:)];
-    [m_observer setDisplayLink:dl];
+    recreateDisplayLink();
+#endif
+}
+
+void AVFDisplayLink::setWindow(QWindow *window)
+{
+    if (m_window == window)
+        return;
+    if (m_window)
+        disconnect(m_window, nullptr, this, nullptr);
+    m_window = window;
+    if (m_window)
+        connect(m_window, &QWindow::screenChanged, this, &AVFDisplayLink::recreateDisplayLink);
+#if !defined(QT_PLATFORM_UIKIT)
+    recreateDisplayLink();
+#endif
+}
+
+// Creates the display link of the screen the video is shown on, and follows the
+// window to other screens. Like the display link of the main screen used
+// before, it keeps running while the window is hidden, as the frames may be
+// used for more than showing them. Without a window, or on platforms other
+// than cocoa, it uses the main screen at the time.
+void AVFDisplayLink::recreateDisplayLink()
+{
+#if !defined(QT_PLATFORM_UIKIT)
+    NSScreen *screen = nil;
+    if (QScreen *windowScreen = m_window ? m_window->screen() : nullptr) {
+        if (auto *cocoaScreen = windowScreen->nativeInterface<QNativeInterface::QCocoaScreen>())
+            screen = cocoaScreen->nativeScreen();
+    }
+    if (!screen)
+        screen = NSScreen.mainScreen;
+
+    const bool wasActive = m_isActive;
+    if (wasActive)
+        stop();
+    // Invalidates the previous one. nil if there's no screen at all.
+    [m_observer setDisplayLink:[screen displayLinkWithTarget:m_observer
+                                                    selector:@selector(displayLinkNotification:)]];
+    if (wasActive)
+        start();
 #endif
 }
 

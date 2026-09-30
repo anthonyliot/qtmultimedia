@@ -11,6 +11,7 @@
 #include <QtMultimedia/qmediaplayer.h>
 #include <QtMultimedia/qmediacapturesession.h>
 #include <QtMultimedia/private/qmultimediautils_p.h>
+#include <QtMultimedia/private/qplatformvideosink_p.h>
 #include <QtMultimedia/private/qvideoframetexturepool_p.h>
 #include <QtMultimedia/private/qvideooutputorientationhandler_p.h>
 
@@ -466,6 +467,12 @@ void QQuickVideoOutput::itemChange(QQuickItem::ItemChange change,
 
     disconnectWindowConnections();
     m_window = changeData.window;
+
+    // Tell the backend which window the video is shown in, e.g. to pace frame
+    // delivery to its display. A QQuickWidget keeps the screen of the window
+    // it renders offscreen in sync with its own.
+    if (auto *platformSink = m_sink->platformVideoSink())
+        platformSink->setDisplayWindow(m_window);
 
     if (m_window) {
         auto connectToWindow = [&](auto signal, auto function) {

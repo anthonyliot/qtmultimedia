@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <list>
+#include <memory>
 
 #ifdef Q_OS_MACOS
 #  include <CoreFoundation/CoreFoundation.h>
@@ -62,6 +63,9 @@ private slots:
     void videoWindow_preferredFrameRate_followsPlaybackRate();
     void videoWindow_preferredFrameRate_isResetWhenPaused();
     void videoWindow_preferredFrameRate_isOnlySetForVariableRefreshRate();
+    void videoWindow_receivesFrames_whileHidden();
+    void videoWindow_receivesFrames_afterMovingToAnotherScreen();
+    void videoWindow_canBeDeleted_whilePlaying();
 
 private:
     QVideoFrame createDefaultFrame() const;
@@ -430,6 +434,13 @@ struct FrameCounter
                              }
                          });
     }
+    // Frames within the next ms milliseconds, running the event loop
+    int framesWithin(int ms)
+    {
+        const int before = frames;
+        QTest::qWait(ms);
+        return frames - before;
+    }
     int frames = 0;
     qreal streamFrameRate = 0;
 };
@@ -634,6 +645,93 @@ void tst_QVideoFrameBackend::videoWindow_preferredFrameRate_isOnlySetForVariable
     if (platformPacesToTheDisplay() && variableRefreshRate)
         QCOMPARE_GT(expected, 0);
     QCOMPARE(window.preferredFrameRate(), expected);
+}
+
+void tst_QVideoFrameBackend::videoWindow_receivesFrames_whileHidden()
+{
+    if (!m_colorsVideo)
+        QSKIP("The test video can't be opened, see testMediaFilesAreSupported");
+#ifdef Q_OS_HARMONY
+    QSKIP("OHOS demuxer rejects the H.264 profile used by colors.mp4");
+#endif
+
+    // Frames keep coming while the video window is hidden, as they may be
+    // used for more than showing them
+    QVideoWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    FrameCounter counter(window);
+
+    QMediaPlayer player;
+    player.setVideoOutput(&window);
+    player.setSource(*m_colorsVideo);
+    player.setLoops(QMediaPlayer::Infinite);
+    player.play();
+    QTRY_VERIFY(counter.frames > 0);
+
+    window.hide();
+    QTRY_VERIFY(!window.isExposed());
+    QVERIFY2(counter.framesWithin(1000) > 0, "no frames while the window is hidden");
+}
+
+void tst_QVideoFrameBackend::videoWindow_receivesFrames_afterMovingToAnotherScreen()
+{
+    if (!m_colorsVideo)
+        QSKIP("The test video can't be opened, see testMediaFilesAreSupported");
+    const QList<QScreen *> screens = QGuiApplication::screens();
+    if (screens.size() < 2)
+        QSKIP("This test needs two screens");
+
+    // Frames keep coming after the video window moves to another screen, where
+    // the AVFoundation backend recreates the display link it polls for frames
+    // with. A link left on the old screen would still poll, so this catches a
+    // broken recreation, not a missing one.
+    QVideoWindow window;
+    window.setScreen(screens.at(0));
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    FrameCounter counter(window);
+
+    QMediaPlayer player;
+    player.setVideoOutput(&window);
+    player.setSource(*m_colorsVideo);
+    player.setLoops(QMediaPlayer::Infinite);
+    player.play();
+    QTRY_VERIFY(counter.frames > 0);
+
+    window.setGeometry(QRect(screens.at(1)->availableGeometry().topLeft() + QPoint(50, 50),
+                             window.size()));
+    QTRY_COMPARE(window.screen(), screens.at(1));
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    const int frames = counter.framesWithin(1000);
+    QVERIFY2(frames >= counter.streamFrameRate * 0.6,
+             qPrintable(QStringLiteral("%1 frames in 1 s at %2 fps")
+                                .arg(frames).arg(counter.streamFrameRate)));
+}
+
+void tst_QVideoFrameBackend::videoWindow_canBeDeleted_whilePlaying()
+{
+    if (!m_colorsVideo)
+        QSKIP("The test video can't be opened, see testMediaFilesAreSupported");
+#ifdef Q_OS_HARMONY
+    QSKIP("OHOS demuxer rejects the H.264 profile used by colors.mp4");
+#endif
+
+    // The backend may keep the window around to follow its screen
+    QMediaPlayer player;
+    auto window = std::make_unique<QVideoWindow>();
+    window->show();
+    QVERIFY(QTest::qWaitForWindowExposed(window.get()));
+    FrameCounter counter(*window);
+    player.setVideoOutput(window.get());
+    player.setSource(*m_colorsVideo);
+    player.setLoops(QMediaPlayer::Infinite);
+    player.play();
+    QTRY_VERIFY(counter.frames > 0);
+
+    window.reset();
+    QTest::qWait(500);
+    QCOMPARE(player.playbackState(), QMediaPlayer::PlayingState);
 }
 
 QTEST_MAIN(tst_QVideoFrameBackend)

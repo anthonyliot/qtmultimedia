@@ -71,6 +71,8 @@ QVideoWindowPrivate::QVideoWindowPrivate(QVideoWindow *q)
     }
 
     QObject::connect(m_sink.get(), &QVideoSink::videoFrameChanged, q, &QVideoWindow::setVideoFrame);
+    if (auto *platformSink = m_sink->platformVideoSink())
+        platformSink->setDisplayWindow(q);
 }
 
 QVideoWindowPrivate::~QVideoWindowPrivate()
