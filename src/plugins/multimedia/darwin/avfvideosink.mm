@@ -37,6 +37,15 @@ void AVFVideoSink::setRhi(QRhi *rhi)
         m_interface->setRhi(rhi);
 }
 
+void AVFVideoSink::setDisplayWindow(QWindow *window)
+{
+    if (m_displayWindow == window)
+        return;
+    m_displayWindow = window;
+    if (m_interface)
+        m_interface->setDisplayWindow(window);
+}
+
 void AVFVideoSink::setNativeSize(QSize size)
 {
     if (size == nativeSize())
@@ -49,8 +58,10 @@ void AVFVideoSink::setNativeSize(QSize size)
 void AVFVideoSink::setVideoSinkInterface(AVFVideoSinkInterface *interface)
 {
     m_interface = interface;
-    if (m_interface)
+    if (m_interface) {
         m_interface->setRhi(m_rhi);
+        m_interface->setDisplayWindow(m_displayWindow);
+    }
 }
 
 AVFVideoSinkInterface::~AVFVideoSinkInterface()
@@ -85,6 +96,8 @@ void AVFVideoSinkInterface::setVideoSink(AVFVideoSink *sink)
     if (m_sink) {
         m_sink->setVideoSinkInterface(this);
         reconfigure();
+    } else {
+        setDisplayWindow(nullptr);
     }
 }
 

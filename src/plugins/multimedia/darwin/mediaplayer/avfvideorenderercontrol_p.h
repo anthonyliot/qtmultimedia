@@ -42,6 +42,7 @@ public:
     // AVFVideoSinkInterface
     void reconfigure() override;
     void setLayer(CALayer *layer) override;
+    void setDisplayWindow(QWindow *window) override;
 
     void setVideoRotation(QtVideo::Rotation);
     void setVideoMirrored(bool mirrored);

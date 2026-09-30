@@ -41,6 +41,10 @@ public:
     virtual void setRhi(QRhi * /*rhi*/) {}
 
     virtual void setWinId(WId) {}
+    // The window the frames are shown in, if known, e.g. to pace frame
+    // delivery to its display. Unlike setWinId(), this doesn't make the
+    // sink render into the window.
+    virtual void setDisplayWindow(QWindow *) {}
     virtual void setDisplayRect(const QRect &) {};
     virtual void setFullScreen(bool) {}
     virtual void setAspectRatioMode(Qt::AspectRatioMode) {}

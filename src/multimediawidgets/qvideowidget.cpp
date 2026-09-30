@@ -36,6 +36,17 @@ using namespace Qt::Literals;
     \b {Note}: Only a single display output can be attached to a media
     object at one time.
 
+    On macOS, while a QMediaPlayer plays to the widget on a display with a
+    variable refresh rate, such as ProMotion, the internal window the widget
+    shows the video in asks for the rate the video's frames arrive at, or a
+    whole multiple of it, as its preferred frame rate (see
+    QWindow::preferredFrameRate), when the display can show every frame for the
+    same time at that rate, for instance 24 Hz for 24 fps video on a 120 Hz
+    display. The window is then updated at that rate, so that frames aren't
+    shown a display refresh longer or shorter depending on when they arrive, but
+    a frame may be shown up to one frame interval later than at the display's
+    full rate.
+
     \warning QVideoWidget is not supported on the \c eglfs platform plugin.
 
     \sa QCamera, QMediaPlayer, QGraphicsVideoItem

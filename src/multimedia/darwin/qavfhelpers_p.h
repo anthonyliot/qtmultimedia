@@ -27,6 +27,8 @@
 
 QT_BEGIN_NAMESPACE
 
+class QScreen;
+
 using CvPixelFormat = unsigned;
 constexpr CvPixelFormat CvPixelFormatInvalid = 0;
 
@@ -62,6 +64,10 @@ Q_MULTIMEDIA_EXPORT QVideoFrameFormat videoFormatForImageBuffer(CVImageBufferRef
 #if defined(Q_OS_MACOS)
 [[nodiscard]] Q_MULTIMEDIA_EXPORT bool checkMacOsScreenCapturePermissions();
 Q_MULTIMEDIA_EXPORT void requestMacOsScreenCapturePermissions();
+
+// Whether the display of a cocoa screen can refresh at a variable rate
+// (ProMotion, Adaptive-Sync), and so slower for a window that asks for it
+[[nodiscard]] Q_MULTIMEDIA_EXPORT bool hasVariableRefreshRate(QScreen *screen);
 #endif
 
 };

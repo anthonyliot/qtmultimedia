@@ -74,6 +74,13 @@ VideoRenderer::RenderingResult VideoRenderer::renderInternal(Frame frame)
     format.setMaxLuminance(buffer->maxNits());
     format.setRotation(m_transform.rotation);
     format.setMirrored(m_transform.mirroredHorizontallyAfterRotation);
+    // The stream's average frame rate, which lets e.g. QVideoWindow ask for a
+    // matching display refresh rate. 0 (unknown) if FFmpeg doesn't know it.
+    if (const AVStream *stream = codecContext->stream()) {
+        const AVRational frameRate = stream->avg_frame_rate;
+        if (frameRate.num > 0 && frameRate.den > 0)
+            format.setStreamFrameRate(av_q2d(frameRate));
+    }
     QVideoFrame videoFrame = QVideoFramePrivate::createFrame(std::move(buffer), format);
     videoFrame.setStartTime(frame.startTime().get());
     videoFrame.setEndTime(frame.endTime().get());

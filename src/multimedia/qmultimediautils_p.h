@@ -41,6 +41,12 @@ Q_MULTIMEDIA_EXPORT Fraction qRealToFraction(qreal value);
 
 Q_MULTIMEDIA_EXPORT QSize qCalculateFrameSize(QSize resolution, Fraction pixelAspectRatio);
 
+// The preferred frame rate (QWindow::preferredFrameRate) for a window showing
+// video frames that arrive frameRate times per second on a display refreshing
+// refreshRate times per second: the slowest whole multiple of frameRate that
+// the display shows with an even cadence, or 0 if none but its full rate does.
+Q_MULTIMEDIA_EXPORT qreal qVideoPreferredFrameRate(qreal frameRate, qreal refreshRate);
+
 // TODO: after adding pixel aspect ratio to QVideoFrameFormat, the function should
 // consider PAR as well as rotation
 Q_MULTIMEDIA_EXPORT QSize qRotatedFrameSize(QSize size, int rotation);

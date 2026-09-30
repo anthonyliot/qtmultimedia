@@ -18,6 +18,8 @@
 #include <QtMultimedia/private/qplatformvideosink_p.h>
 
 #include <QtCore/private/qcore_mac_p.h>
+#include <QtCore/qpointer.h>
+#include <QtGui/qwindow.h>
 
 #include <CoreVideo/CVBase.h>
 #include <CoreVideo/CVImageBuffer.h>
@@ -41,6 +43,7 @@ public:
     // QPlatformVideoSink interface
 public:
     void setRhi(QRhi *rhi) override;
+    void setDisplayWindow(QWindow *window) override;
 
     void setNativeSize(QSize size);
 
@@ -49,6 +52,7 @@ public:
 private:
     AVFVideoSinkInterface *m_interface = nullptr;
     QRhi *m_rhi = nullptr;
+    QPointer<QWindow> m_displayWindow;
 };
 
 class AVFVideoSinkInterface
@@ -61,6 +65,8 @@ public:
 
     virtual void reconfigure() = 0;
     virtual void setRhi(QRhi *);
+    // The window the sink's frames are shown in, or nullptr
+    virtual void setDisplayWindow(QWindow *) { }
     virtual void setLayer(CALayer *layer);
     virtual void setOutputSettings();
 

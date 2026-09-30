@@ -4,6 +4,8 @@
 #include "avfdisplaylink_p.h"
 
 #include <QtCore/qcoreapplication.h>
+#include <QtGui/qscreen.h>
+#include <QtGui/qscreen_platform.h>
 
 #ifdef QT_DEBUG_AVF
 #include <QtCore/qdebug.h>
@@ -54,18 +56,20 @@ QT_USE_NAMESPACE
         [m_displayLink invalidate];
         [m_displayLink release];
     }
-    if (displayLink)
-        m_displayLink = [displayLink retain];
+    m_displayLink = [displayLink retain];
 }
 
 - (void)start
 {
-    [m_displayLink addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSDefaultRunLoopMode];
+    // In the common modes, so that the video keeps playing while the run loop
+    // tracks a menu or a live resize, or runs a modal session. Qt delivers the
+    // event that displayLinkNotification: posts in those modes as well.
+    [m_displayLink addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
 }
 
 - (void)stop
 {
-    [m_displayLink removeFromRunLoop:[NSRunLoop currentRunLoop] forMode:NSDefaultRunLoopMode];
+    [m_displayLink removeFromRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
 }
 
 - (void)displayLinkNotification:(CADisplayLink *)sender
@@ -89,31 +93,53 @@ AVFDisplayLink::AVFDisplayLink(QObject *parent)
                                                     selector:@selector(displayLinkNotification:)];
     [m_observer setDisplayLink:dl];
 #else
-    if (@available(macOS 15.0, *)) {
-        m_observer = [[DisplayLinkObserver alloc] initWithAVFDisplayLink:this];
-        CADisplayLink *_Nonnull dl =
-                [NSScreen.mainScreen displayLinkWithTarget:m_observer
-                                                  selector:@selector(displayLinkNotification:)];
-        [m_observer setDisplayLink:dl];
+    // -[NSScreen displayLinkWithTarget:selector:] is available from macOS 14.0,
+    // and our minimum deployment target is 14.4, so CVDisplayLink, which is
+    // deprecated, is no longer needed. Until we know the window the video is
+    // shown in, see setWindow(), use the main screen.
+    m_observer = [[DisplayLinkObserver alloc] initWithAVFDisplayLink:this];
+    recreateDisplayLink();
+#endif
+}
+
+void AVFDisplayLink::setWindow(QWindow *window)
+{
+    if (m_window == window)
         return;
+    if (m_window)
+        disconnect(m_window, nullptr, this, nullptr);
+    m_window = window;
+    if (m_window)
+        connect(m_window, &QWindow::screenChanged, this, &AVFDisplayLink::recreateDisplayLink);
+#if !defined(QT_PLATFORM_UIKIT)
+    recreateDisplayLink();
+#endif
+}
+
+// Creates the display link of the screen the video is shown on, and follows the
+// window to other screens. Like the display link of the main screen used
+// before, it keeps running while the window is hidden, as the frames may be
+// used for more than showing them. Without a window, or on platforms other
+// than cocoa, it uses the main screen at the time.
+void AVFDisplayLink::recreateDisplayLink()
+{
+#if !defined(QT_PLATFORM_UIKIT)
+    NSScreen *screen = nil;
+    if (QScreen *windowScreen = m_window ? m_window->screen() : nullptr) {
+        if (auto *cocoaScreen = windowScreen->nativeInterface<QNativeInterface::QCocoaScreen>())
+            screen = cocoaScreen->nativeScreen();
     }
-    if (!m_observer) {
-        QT_WARNING_PUSH
-        QT_WARNING_DISABLE_DEPRECATED
-        CVDisplayLinkCreateWithCGDisplay(kCGDirectMainDisplay, &m_cvDisplayLink);
-        if (m_cvDisplayLink) {
-            CVDisplayLinkSetCurrentCGDisplay(m_cvDisplayLink, kCGDirectMainDisplay);
-            CVDisplayLinkSetOutputCallback(m_cvDisplayLink,
-                                           [](CVDisplayLinkRef, const CVTimeStamp *,
-                                              const CVTimeStamp *, CVOptionFlags, CVOptionFlags *,
-                                              void *displayLinkContext) -> CVReturn {
-                static_cast<AVFDisplayLink *>(displayLinkContext)->displayLinkEvent();
-                return kCVReturnSuccess;
-            },
-                                           this);
-        }
-        QT_WARNING_POP
-    }
+    if (!screen)
+        screen = NSScreen.mainScreen;
+
+    const bool wasActive = m_isActive;
+    if (wasActive)
+        stop();
+    // Invalidates the previous one. nil if there's no screen at all.
+    [m_observer setDisplayLink:[screen displayLinkWithTarget:m_observer
+                                                    selector:@selector(displayLinkNotification:)]];
+    if (wasActive)
+        start();
 #endif
 }
 
@@ -126,28 +152,17 @@ AVFDisplayLink::~AVFDisplayLink()
     stop();
 
     if (m_observer) {
+        // The display link retains its target, the observer, until it's
+        // invalidated, so releasing the observer alone would leak both
+        [m_observer setDisplayLink:nil];
         [m_observer release];
         m_observer = nil;
     }
-
-#if !defined(QT_PLATFORM_UIKIT)
-    if (m_cvDisplayLink) {
-        QT_WARNING_PUSH
-        QT_WARNING_DISABLE_DEPRECATED
-        CVDisplayLinkRelease(m_cvDisplayLink);
-        QT_WARNING_POP
-        m_cvDisplayLink = nullptr;
-    }
-#endif
 }
 
 bool AVFDisplayLink::isValid() const
 {
-#if !defined(QT_PLATFORM_UIKIT)
-    return m_observer || m_cvDisplayLink != nullptr;
-#else
     return m_observer;
-#endif
 }
 
 bool AVFDisplayLink::isActive() const
@@ -160,14 +175,6 @@ void AVFDisplayLink::start()
     if (!m_isActive) {
         if (m_observer)
             [m_observer start];
-#if !defined(QT_PLATFORM_UIKIT)
-        else if (m_cvDisplayLink) {
-            QT_WARNING_PUSH
-            QT_WARNING_DISABLE_DEPRECATED
-            CVDisplayLinkStart(m_cvDisplayLink);
-            QT_WARNING_POP
-        }
-#endif
         m_isActive = true;
     }
 }
@@ -177,14 +184,6 @@ void AVFDisplayLink::stop()
     if (m_isActive) {
         if (m_observer)
             [m_observer stop];
-#if !defined(QT_PLATFORM_UIKIT)
-        else if (m_cvDisplayLink) {
-            QT_WARNING_PUSH
-            QT_WARNING_DISABLE_DEPRECATED
-            CVDisplayLinkStop(m_cvDisplayLink);
-            QT_WARNING_POP
-        }
-#endif
         m_framePending = false;
         m_isActive = false;
     }
