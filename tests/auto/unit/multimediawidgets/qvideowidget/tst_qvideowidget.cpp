@@ -4,6 +4,7 @@
 #include <qtmultimediaglobal.h>
 #include <QtTest/qtest.h>
 #include <QtTest/qsignalspy.h>
+#include <QtCore/qscopeguard.h>
 
 #include "qvideowidget.h"
 #include "qvideosink.h"
@@ -15,9 +16,11 @@
 #include <QtWidgets/qapplication.h>
 
 #include <qmockintegration.h>
+#include <qmockmediaplayer.h>
 #include <qmockvideosink.h>
 
 #include <private/mediabackendutils_p.h>
+#include <private/qvideowindow_p.h>
 
 
 Q_ENABLE_MOCK_MULTIMEDIA_PLUGIN
@@ -48,6 +51,7 @@ private slots:
 #endif
 
     void paint();
+    void preferredFrameRate_followsStreamFrameRate();
 
 private:
 //    void color_data();
@@ -264,6 +268,54 @@ void tst_QVideoWidget::paint()
     emit sink->setVideoFrame(frame);
 
     QCoreApplication::processEvents(QEventLoop::AllEvents);
+}
+
+void tst_QVideoWidget::preferredFrameRate_followsStreamFrameRate()
+{
+#ifndef QT_BUILD_INTERNAL
+    QSKIP("Needs a developer build");
+#else
+    // QVideoWidget shows the video in an internal QVideoWindow, which asks for
+    // the rate of a media player's frames when a display with a variable
+    // refresh rate shows it evenly. This display may have a fixed one.
+    qt_setVideoWindowAssumesVariableRefreshRate(true);
+    const auto restore = qScopeGuard([] { qt_setVideoWindowAssumesVariableRefreshRate(false); });
+    QVideoWidget widget;
+    QMediaPlayer player;
+    player.setVideoOutput(&widget);
+    QMockIntegration::instance()->lastPlayer()->setIsValid(true);
+    player.setSource(QUrl(QStringLiteral("file:///video.mp4")));
+    player.play();
+    QCOMPARE(player.playbackState(), QMediaPlayer::PlayingState);
+    widget.resize(64, 48);
+    widget.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&widget));
+
+    QVideoWindow *videoWindow = nullptr;
+    for (QWindow *window : QGuiApplication::allWindows()) {
+        if (auto *candidate = qobject_cast<QVideoWindow *>(window))
+            videoWindow = candidate;
+    }
+    if (!videoWindow)
+        QSKIP("QVideoWidget doesn't use a QVideoWindow on this platform");
+
+    // A rate the display shows exactly: its refresh rate divided by the smallest
+    // whole number above 1 that divides it. Only where update requests are paced
+    // to the display, see tst_QVideoFrameBackend.
+    const bool paced = QGuiApplication::platformName() == u"cocoa";
+    const qreal refreshRate = videoWindow->screen()->refreshRate();
+    int refreshes = 2;
+    while (refreshes < qRound(refreshRate) && qRound(refreshRate) % refreshes != 0)
+        ++refreshes;
+    const qreal exact = float(refreshRate / refreshes);
+    QVideoFrameFormat format(QSize(2, 2), QVideoFrameFormat::Format_XRGB8888);
+    format.setStreamFrameRate(exact);
+    widget.videoSink()->setVideoFrame(QVideoFrame(format));
+    QCOMPARE(videoWindow->preferredFrameRate(), paced ? exact : 0.0);
+
+    widget.videoSink()->setVideoFrame(QVideoFrame());
+    QCOMPARE(videoWindow->preferredFrameRate(), 0.0);
+#endif
 }
 
 QTEST_MAIN(tst_QVideoWidget)

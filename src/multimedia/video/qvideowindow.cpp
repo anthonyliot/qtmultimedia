@@ -3,14 +3,20 @@
 
 #include "qvideowindow_p.h"
 #include <QPlatformSurfaceEvent>
+#include <qmediaplayer.h>
 #include <qfile.h>
 #include <qpainter.h>
+#include <qscreen.h>
 #include <private/qguiapplication_p.h>
 #include <private/qmemoryvideobuffer_p.h>
 #include <private/qhwvideobuffer_p.h>
 #include <private/qmultimediautils_p.h>
 #include <private/qvideoframe_p.h>
 #include <qpa/qplatformintegration.h>
+
+#if defined(Q_OS_MACOS)
+#include <private/qavfhelpers_p.h>
+#endif
 
 QT_BEGIN_NAMESPACE
 
@@ -65,12 +71,39 @@ QVideoWindowPrivate::QVideoWindowPrivate(QVideoWindow *q)
     }
 
     QObject::connect(m_sink.get(), &QVideoSink::videoFrameChanged, q, &QVideoWindow::setVideoFrame);
+    if (auto *platformSink = m_sink->platformVideoSink())
+        platformSink->setDisplayWindow(q);
 }
 
 QVideoWindowPrivate::~QVideoWindowPrivate()
 {
     QObject::disconnect(m_sink.get(), &QVideoSink::videoFrameChanged,
             q, &QVideoWindow::setVideoFrame);
+}
+
+static bool s_assumeVariableRefreshRate = false;
+
+void qt_setVideoWindowAssumesVariableRefreshRate(bool assume)
+{
+    s_assumeVariableRefreshRate = assume;
+}
+
+// Whether to set the window's preferred frame rate, which is only worth it where
+// it lets the display refresh slower: on displays with a variable refresh rate.
+// On others it would only put the window on a coarser grid, showing frames
+// later. And only where update requests are paced to the display: with timer
+// based update requests it's a minimum interval from the previous one, which
+// could only make frames late, as the window requests an update per frame
+// anyway. iOS doesn't tell whether a display has a variable refresh rate.
+bool QVideoWindowPrivate::setsPreferredFrameRate() const
+{
+#if defined(Q_OS_MACOS)
+    if (QGuiApplication::platformName() != u"cocoa" || q->requestedFormat().swapInterval() == 0)
+        return false;
+    return s_assumeVariableRefreshRate || QAVFHelpers::hasVariableRefreshRate(q->screen());
+#else
+    return false;
+#endif
 }
 
 static const float g_vw_quad[] = {
@@ -520,6 +553,43 @@ void QVideoWindow::setVideoFrame(const QVideoFrame &frame)
     if (d->m_texturePool.currentFrame().subtitleText() != frame.subtitleText())
         d->m_subtitleDirty = true;
     d->m_texturePool.setCurrentFrame(frame);
+
+    // Update the window at the video's rate on a display with a variable
+    // refresh rate, when the display shows that rate evenly, e.g. 24 fps film
+    // at 24 Hz on a 120 Hz ProMotion display (see qVideoPreferredFrameRate()),
+    // so that frames aren't shown a refresh earlier or later depending on when
+    // they arrive. Such a display may refresh at the video's rate anyway, but
+    // without a preference the window renders a frame at the first display link
+    // callback after it arrives. Only for a playing media player's frames,
+    // which arrive at the stream's frame rate, faster or slower when played at
+    // another rate (asking for less would drop frames): cameras report the
+    // maximum rate of their format but deliver fewer frames in low light,
+    // screen captures deliver on changes, and a paused player delivers frames
+    // when seeking, which shouldn't wait for the grid of that rate. It's
+    // evaluated for every frame, so it follows the window's screen, and without
+    // frames the window requests no updates that it could pace.
+    qreal preferredFrameRate = 0;
+    auto *player = qobject_cast<QMediaPlayer *>(d->m_sink->source());
+    if (player && player->playbackState() == QMediaPlayer::PlayingState
+        && d->setsPreferredFrameRate()) {
+        const QScreen *windowScreen = screen();
+        preferredFrameRate = qVideoPreferredFrameRate(
+                frame.surfaceFormat().streamFrameRate() * qAbs(player->playbackRate()),
+                windowScreen ? windowScreen->refreshRate() : 0);
+    }
+    // Set it, and reset it once it no longer applies (another screen, paused,
+    // ...), while the window's preference is the one set here, or none: one
+    // that someone else set is left alone (unless it's the same value)
+    const qreal current = QWindow::preferredFrameRate();
+    if (current == 0 || current == d->m_preferredFrameRate) {
+        setPreferredFrameRate(preferredFrameRate);
+        d->m_preferredFrameRate = preferredFrameRate;
+    } else {
+        // Someone else's: forget ours, so that a later equal value of theirs
+        // isn't taken for ours
+        d->m_preferredFrameRate = 0;
+    }
+
     if (d->isExposed)
         requestUpdate();
 }

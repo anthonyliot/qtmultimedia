@@ -2,13 +2,17 @@
 // SPDX-License-Identifier: LicenseRef-Qt-Commercial OR GPL-3.0-only
 
 #include <QtCore/qdebug.h>
+#include <QtCore/qelapsedtimer.h>
 #include <QtCore/qthreadpool.h>
 
+#include <QtGui/qguiapplication.h>
+#include <QtGui/qscreen.h>
 #include <QtGui/rhi/qrhi.h>
 
 #include <QtMultimedia/qmediaplayer.h>
 #include <QtMultimedia/qvideoframe.h>
 
+#include <QtMultimedia/private/qmultimediautils_p.h>
 #include <QtMultimedia/private/qthreadlocalrhi_p.h>
 #include <QtMultimedia/private/qvideotexturehelper_p.h>
 #include <QtMultimedia/private/qvideowindow_p.h>
@@ -20,7 +24,14 @@
 
 #include <QtTest/qtest.h>
 
+#include <algorithm>
 #include <list>
+#include <memory>
+
+#ifdef Q_OS_MACOS
+#  include <CoreFoundation/CoreFoundation.h>
+#  include <QtMultimedia/private/qavfhelpers_p.h>
+#endif
 
 class tst_QVideoFrameBackend : public QIntegrationTestBase
 {
@@ -42,6 +53,19 @@ private slots:
 
     void toImage_returnsImage_whenCalledFromSeparateThreadAndWhileRenderingToWindow_data();
     void toImage_returnsImage_whenCalledFromSeparateThreadAndWhileRenderingToWindow();
+
+    void playback_deliversFrames_whileRunLoopIsInMode_data();
+    void playback_deliversFrames_whileRunLoopIsInMode();
+
+    void streamFrameRate_isReportedForPlayedFrames();
+
+    void videoWindow_preferredFrameRate_isSetDuringPlayback();
+    void videoWindow_preferredFrameRate_followsPlaybackRate();
+    void videoWindow_preferredFrameRate_isResetWhenPaused();
+    void videoWindow_preferredFrameRate_isOnlySetForVariableRefreshRate();
+    void videoWindow_receivesFrames_whileHidden();
+    void videoWindow_receivesFrames_afterMovingToAnotherScreen();
+    void videoWindow_canBeDeleted_whilePlaying();
 
 private:
     QVideoFrame createDefaultFrame() const;
@@ -317,6 +341,397 @@ void tst_QVideoFrameBackend::toImage_returnsImage_whenCalledFromSeparateThreadAn
             images.begin(), images.end(), [](const QImage &image) { return !image.isNull(); });
 
     QCOMPARE(validImagesCount, images.size());
+}
+
+void tst_QVideoFrameBackend::playback_deliversFrames_whileRunLoopIsInMode_data()
+{
+    QTest::addColumn<QString>("mode");
+
+    // While a menu is open or a window is live resized, and in modal sessions
+    QTest::newRow("event tracking") << QStringLiteral("NSEventTrackingRunLoopMode");
+    QTest::newRow("modal panel") << QStringLiteral("NSModalPanelRunLoopMode");
+}
+
+void tst_QVideoFrameBackend::playback_deliversFrames_whileRunLoopIsInMode()
+{
+#ifndef Q_OS_MACOS
+    QSKIP("Run loop modes are specific to macOS");
+#else
+    QFETCH(const QString, mode);
+    if (!m_colorsVideo)
+        QSKIP("The test video can't be opened, see testMediaFilesAreSupported");
+    if (QGuiApplication::platformName() != u"cocoa")
+        QSKIP("Only the cocoa platform delivers events in these run loop modes");
+
+    // Frames keep coming while the main run loop runs in another mode than the
+    // default one
+    QVideoSink sink;
+    QMediaPlayer player;
+    player.setVideoOutput(&sink);
+    int frames = 0;
+    connect(&sink, &QVideoSink::videoFrameChanged, &sink, [&](const QVideoFrame &frame) {
+        if (frame.isValid())
+            ++frames;
+    });
+    player.setSource(*m_colorsVideo);
+    player.setLoops(QMediaPlayer::Infinite);
+    player.play();
+    QTRY_VERIFY(frames > 0);
+
+    const int before = frames;
+    const CFStringRef runLoopMode = mode.toCFString();
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < 1000)
+        CFRunLoopRunInMode(runLoopMode, 0.05, false);
+    CFRelease(runLoopMode);
+    QVERIFY2(frames - before >= 10,
+             qPrintable(QStringLiteral("%1 frames in 1 s at 25 fps").arg(frames - before)));
+#endif
+}
+
+void tst_QVideoFrameBackend::streamFrameRate_isReportedForPlayedFrames()
+{
+    if (!m_colorsVideo)
+        QSKIP("The test video can't be opened, see testMediaFilesAreSupported");
+#ifdef Q_OS_HARMONY
+    QSKIP("OHOS demuxer rejects the H.264 profile used by colors.mp4");
+#endif
+    if (!isFFMPEGPlatform() && !isDarwinPlatform())
+        QSKIP("This backend doesn't report the stream frame rate");
+
+    // The frames of a played video tell the frame rate of its stream, 25 fps
+    QVideoSink sink;
+    QMediaPlayer player;
+    player.setVideoOutput(&sink);
+    int frames = 0;
+    QList<qreal> otherRates;
+    connect(&sink, &QVideoSink::videoFrameChanged, &sink, [&](const QVideoFrame &frame) {
+        if (!frame.isValid())
+            return;
+        ++frames;
+        if (frame.surfaceFormat().streamFrameRate() != 25.0)
+            otherRates.append(frame.surfaceFormat().streamFrameRate());
+    });
+    player.setSource(*m_colorsVideo);
+    player.play();
+
+    QTRY_COMPARE_GE(frames, 5);
+    QCOMPARE(otherRates, QList<qreal>());
+}
+
+namespace {
+// Counts the valid frames a video window's sink gets
+struct FrameCounter
+{
+    explicit FrameCounter(QVideoWindow &window)
+    {
+        QObject::connect(window.videoSink(), &QVideoSink::videoFrameChanged, &window,
+                         [this](const QVideoFrame &frame) {
+                             if (frame.isValid()) {
+                                 ++frames;
+                                 streamFrameRate = frame.surfaceFormat().streamFrameRate();
+                             }
+                         });
+    }
+    // Frames within the next ms milliseconds, running the event loop
+    int framesWithin(int ms)
+    {
+        const int before = frames;
+        QTest::qWait(ms);
+        return frames - before;
+    }
+    int frames = 0;
+    qreal streamFrameRate = 0;
+};
+
+// Where QVideoWindow sets a preferred frame rate, if the display has a variable
+// refresh rate: where update requests are paced to the display (the policy
+// itself is tested with the mock backend, in tst_QVideoWindow)
+bool platformPacesToTheDisplay()
+{
+    return QGuiApplication::platformName() == u"cocoa";
+}
+
+// The rates, among those the display shows exactly, to play the 25 fps test
+// video at, closest to its own rate first, and of two as close, the faster one:
+// at most twice as fast or slow. From the actual refresh rate, so that on a
+// 59.94 Hz display they're 29.97 and 19.98, not faster.
+QList<qreal> exactRatesToPlayAt(qreal refreshRate)
+{
+    const int wholeRefreshRate = qRound(refreshRate);
+    QList<qreal> rates;
+    for (int refreshes = 2; refreshes <= wholeRefreshRate; ++refreshes) {
+        const qreal rate = refreshRate / refreshes;
+        if (wholeRefreshRate % refreshes == 0 && rate >= 12.5 && rate <= 50)
+            rates.append(rate);
+    }
+    std::stable_sort(rates.begin(), rates.end(),
+                     [](qreal a, qreal b) { return qAbs(a - 25) < qAbs(b - 25); });
+    return rates;
+}
+
+#ifdef QT_BUILD_INTERNAL
+// This display may have a fixed refresh rate
+struct AssumeVariableRefreshRate
+{
+    AssumeVariableRefreshRate() { qt_setVideoWindowAssumesVariableRefreshRate(true); }
+    ~AssumeVariableRefreshRate() { qt_setVideoWindowAssumesVariableRefreshRate(false); }
+};
+#endif
+} // namespace
+
+void tst_QVideoFrameBackend::videoWindow_preferredFrameRate_isSetDuringPlayback()
+{
+    if (!m_colorsVideo)
+        QSKIP("The test video can't be opened, see testMediaFilesAreSupported");
+#ifdef Q_OS_HARMONY
+    QSKIP("OHOS demuxer rejects the H.264 profile used by colors.mp4");
+#endif
+#ifndef QT_BUILD_INTERNAL
+    QSKIP("Needs a developer build");
+#else
+    // Playing a video in a video window sets the window's preferred frame
+    // rate from the rate its frames arrive at: the 25 fps video played at the
+    // speed that makes it a rate the display shows exactly
+    const AssumeVariableRefreshRate assume;
+    QVideoWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    const QList<qreal> rates = exactRatesToPlayAt(window.screen()->refreshRate());
+    if (rates.isEmpty())
+        QSKIP("No rate this display shows exactly is close enough to 25 fps");
+    FrameCounter counter(window);
+
+    QMediaPlayer player;
+    player.setVideoOutput(&window);
+    player.setSource(*m_colorsVideo);
+    player.setPlaybackRate(rates.first() / 25.0);
+    player.play();
+
+    QTRY_VERIFY(counter.streamFrameRate > 0);
+    // The backend may keep the playback rate as a float
+    const qreal expected = platformPacesToTheDisplay()
+            ? qVideoPreferredFrameRate(counter.streamFrameRate * player.playbackRate(),
+                                       window.screen()->refreshRate())
+            : 0.0;
+    if (platformPacesToTheDisplay())
+        QCOMPARE_GT(expected, 0);
+    QTRY_COMPARE(window.preferredFrameRate(), expected);
+#endif
+}
+
+void tst_QVideoFrameBackend::videoWindow_preferredFrameRate_followsPlaybackRate()
+{
+    if (!m_colorsVideo)
+        QSKIP("The test video can't be opened, see testMediaFilesAreSupported");
+#ifdef Q_OS_HARMONY
+    QSKIP("OHOS demuxer rejects the H.264 profile used by colors.mp4");
+#endif
+#ifndef QT_BUILD_INTERNAL
+    QSKIP("Needs a developer build");
+#else
+    // Played faster or slower, the frames arrive faster or slower: asking for
+    // the stream's rate would make the window drop frames, or leave some shown
+    // longer than others
+    const AssumeVariableRefreshRate assume;
+    QVideoWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    const qreal refreshRate = window.screen()->refreshRate();
+    const QList<qreal> rates = exactRatesToPlayAt(refreshRate);
+    if (rates.size() < 2)
+        QSKIP("Fewer than two rates this display shows exactly are close to 25 fps");
+    FrameCounter counter(window);
+
+    QMediaPlayer player;
+    player.setVideoOutput(&window);
+    player.setSource(*m_colorsVideo);
+    player.setLoops(QMediaPlayer::Infinite);
+    player.setPlaybackRate(rates.at(0) / 25.0);
+    player.play();
+
+    // The backend may keep the playback rate as a float
+    const auto expected = [&] {
+        return platformPacesToTheDisplay()
+                ? qVideoPreferredFrameRate(counter.streamFrameRate * player.playbackRate(),
+                                           refreshRate)
+                : 0.0;
+    };
+    QTRY_VERIFY(counter.streamFrameRate > 0);
+    QTRY_COMPARE(window.preferredFrameRate(), expected());
+    const qreal first = window.preferredFrameRate();
+    player.setPlaybackRate(rates.at(1) / 25.0);
+    QTRY_COMPARE(window.preferredFrameRate(), expected());
+    if (platformPacesToTheDisplay())
+        QCOMPARE_NE(window.preferredFrameRate(), first);
+#endif
+}
+
+void tst_QVideoFrameBackend::videoWindow_preferredFrameRate_isResetWhenPaused()
+{
+    if (!m_colorsVideo)
+        QSKIP("The test video can't be opened, see testMediaFilesAreSupported");
+#ifdef Q_OS_HARMONY
+    QSKIP("OHOS demuxer rejects the H.264 profile used by colors.mp4");
+#endif
+#ifndef QT_BUILD_INTERNAL
+    QSKIP("Needs a developer build");
+#else
+    if (!platformPacesToTheDisplay())
+        QSKIP("QVideoWindow only sets a preferred frame rate on the cocoa platform");
+
+    // A paused player delivers frames when seeking, which shouldn't wait for
+    // the grid of the video's rate
+    const AssumeVariableRefreshRate assume;
+    QVideoWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    const QList<qreal> rates = exactRatesToPlayAt(window.screen()->refreshRate());
+    if (rates.isEmpty())
+        QSKIP("No rate this display shows exactly is close enough to 25 fps");
+    FrameCounter counter(window);
+
+    QMediaPlayer player;
+    player.setVideoOutput(&window);
+    player.setSource(*m_colorsVideo);
+    player.setPlaybackRate(rates.first() / 25.0);
+    player.play();
+    QTRY_COMPARE_GT(window.preferredFrameRate(), 0);
+
+    player.pause();
+    QTRY_COMPARE(player.playbackState(), QMediaPlayer::PausedState);
+    const int before = counter.frames;
+    player.setPosition(5000);
+    QTRY_COMPARE_GT(counter.frames, before);
+    QCOMPARE(window.preferredFrameRate(), 0.0);
+#endif
+}
+
+void tst_QVideoFrameBackend::videoWindow_preferredFrameRate_isOnlySetForVariableRefreshRate()
+{
+    if (!m_colorsVideo)
+        QSKIP("The test video can't be opened, see testMediaFilesAreSupported");
+#ifdef Q_OS_HARMONY
+    QSKIP("OHOS demuxer rejects the H.264 profile used by colors.mp4");
+#endif
+    // Without assuming a variable refresh rate, the window follows what
+    // QAVFHelpers::hasVariableRefreshRate() reads from AppKit for its display:
+    // no preference with a fixed refresh rate, where it would only delay frames
+    QVideoWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    const qreal refreshRate = window.screen()->refreshRate();
+    const QList<qreal> rates = exactRatesToPlayAt(refreshRate);
+    if (rates.isEmpty())
+        QSKIP("No rate this display shows exactly is close enough to 25 fps");
+    FrameCounter counter(window);
+
+    QMediaPlayer player;
+    player.setVideoOutput(&window);
+    player.setSource(*m_colorsVideo);
+    player.setPlaybackRate(rates.first() / 25.0);
+    player.play();
+    QTRY_VERIFY(counter.frames > 5);
+
+    bool variableRefreshRate = false;
+#ifdef Q_OS_MACOS
+    variableRefreshRate = QAVFHelpers::hasVariableRefreshRate(window.screen());
+#endif
+    qInfo() << "display with a variable refresh rate:" << variableRefreshRate;
+    const qreal expected = platformPacesToTheDisplay() && variableRefreshRate
+            ? qVideoPreferredFrameRate(counter.streamFrameRate * player.playbackRate(), refreshRate)
+            : 0.0;
+    if (platformPacesToTheDisplay() && variableRefreshRate)
+        QCOMPARE_GT(expected, 0);
+    QCOMPARE(window.preferredFrameRate(), expected);
+}
+
+void tst_QVideoFrameBackend::videoWindow_receivesFrames_whileHidden()
+{
+    if (!m_colorsVideo)
+        QSKIP("The test video can't be opened, see testMediaFilesAreSupported");
+#ifdef Q_OS_HARMONY
+    QSKIP("OHOS demuxer rejects the H.264 profile used by colors.mp4");
+#endif
+
+    // Frames keep coming while the video window is hidden, as they may be
+    // used for more than showing them
+    QVideoWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    FrameCounter counter(window);
+
+    QMediaPlayer player;
+    player.setVideoOutput(&window);
+    player.setSource(*m_colorsVideo);
+    player.setLoops(QMediaPlayer::Infinite);
+    player.play();
+    QTRY_VERIFY(counter.frames > 0);
+
+    window.hide();
+    QTRY_VERIFY(!window.isExposed());
+    QVERIFY2(counter.framesWithin(1000) > 0, "no frames while the window is hidden");
+}
+
+void tst_QVideoFrameBackend::videoWindow_receivesFrames_afterMovingToAnotherScreen()
+{
+    if (!m_colorsVideo)
+        QSKIP("The test video can't be opened, see testMediaFilesAreSupported");
+    const QList<QScreen *> screens = QGuiApplication::screens();
+    if (screens.size() < 2)
+        QSKIP("This test needs two screens");
+
+    // Frames keep coming after the video window moves to another screen, where
+    // the AVFoundation backend recreates the display link it polls for frames
+    // with. A link left on the old screen would still poll, so this catches a
+    // broken recreation, not a missing one.
+    QVideoWindow window;
+    window.setScreen(screens.at(0));
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    FrameCounter counter(window);
+
+    QMediaPlayer player;
+    player.setVideoOutput(&window);
+    player.setSource(*m_colorsVideo);
+    player.setLoops(QMediaPlayer::Infinite);
+    player.play();
+    QTRY_VERIFY(counter.frames > 0);
+
+    window.setGeometry(QRect(screens.at(1)->availableGeometry().topLeft() + QPoint(50, 50),
+                             window.size()));
+    QTRY_COMPARE(window.screen(), screens.at(1));
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    const int frames = counter.framesWithin(1000);
+    QVERIFY2(frames >= counter.streamFrameRate * 0.6,
+             qPrintable(QStringLiteral("%1 frames in 1 s at %2 fps")
+                                .arg(frames).arg(counter.streamFrameRate)));
+}
+
+void tst_QVideoFrameBackend::videoWindow_canBeDeleted_whilePlaying()
+{
+    if (!m_colorsVideo)
+        QSKIP("The test video can't be opened, see testMediaFilesAreSupported");
+#ifdef Q_OS_HARMONY
+    QSKIP("OHOS demuxer rejects the H.264 profile used by colors.mp4");
+#endif
+
+    // The backend may keep the window around to follow its screen
+    QMediaPlayer player;
+    auto window = std::make_unique<QVideoWindow>();
+    window->show();
+    QVERIFY(QTest::qWaitForWindowExposed(window.get()));
+    FrameCounter counter(*window);
+    player.setVideoOutput(window.get());
+    player.setSource(*m_colorsVideo);
+    player.setLoops(QMediaPlayer::Infinite);
+    player.play();
+    QTRY_VERIFY(counter.frames > 0);
+
+    window.reset();
+    QTest::qWait(500);
+    QCOMPARE(player.playbackState(), QMediaPlayer::PlayingState);
 }
 
 QTEST_MAIN(tst_QVideoFrameBackend)

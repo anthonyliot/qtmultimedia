@@ -16,13 +16,12 @@
 //
 
 #include <QtCore/qobject.h>
+#include <QtCore/qpointer.h>
+#include <QtGui/qwindow.h>
 
 #include <atomic>
 
 #import <QuartzCore/CADisplayLink.h>
-#if !defined(QT_PLATFORM_UIKIT)
-#include <QuartzCore/CVDisplayLink.h>
-#endif
 
 @class QT_MANGLE_NAMESPACE(DisplayLinkObserver);
 
@@ -36,6 +35,9 @@ public:
     ~AVFDisplayLink() override;
     bool isValid() const;
     bool isActive() const;
+
+    // The window the video is shown in, whose display to follow, or nullptr
+    void setWindow(QWindow *window);
 
 public Q_SLOTS:
     void start();
@@ -51,10 +53,10 @@ protected:
     bool event(QEvent *) override;
 
 private:
+    void recreateDisplayLink();
+
     QT_MANGLE_NAMESPACE(DisplayLinkObserver) *m_observer = {};
-#if !defined(QT_PLATFORM_UIKIT)
-    CVDisplayLinkRef m_cvDisplayLink{};
-#endif
+    QPointer<QWindow> m_window;
     bool m_isActive{};
     std::atomic<bool> m_framePending{false};
 };

@@ -8,6 +8,13 @@
 #include <CoreMedia/CMFormatDescription.h>
 #include <CoreVideo/CoreVideo.h>
 
+#if defined(Q_OS_MACOS)
+#include <QtGui/qscreen.h>
+#include <QtGui/qscreen_platform.h>
+
+#import <AppKit/NSScreen.h>
+#endif
+
 namespace {
 
 using PixelFormat = QVideoFrameFormat::PixelFormat;
@@ -160,6 +167,14 @@ bool QAVFHelpers::checkMacOsScreenCapturePermissions()
 void QAVFHelpers::requestMacOsScreenCapturePermissions()
 {
     CGRequestScreenCaptureAccess();
+}
+
+bool QAVFHelpers::hasVariableRefreshRate(QScreen *screen)
+{
+    using QNativeInterface::QCocoaScreen;
+    auto *cocoaScreen = screen ? screen->nativeInterface<QCocoaScreen>() : nullptr;
+    NSScreen *nsScreen = cocoaScreen ? cocoaScreen->nativeScreen() : nil;
+    return nsScreen && nsScreen.maximumRefreshInterval > nsScreen.minimumRefreshInterval;
 }
 
 #endif // Q_OS_MACOS
